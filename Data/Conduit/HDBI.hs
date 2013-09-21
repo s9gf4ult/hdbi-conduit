@@ -5,10 +5,8 @@
 module Data.Conduit.HDBI where
 
 import Control.Monad.IO.Class
-import Control.Monad
 import Data.Conduit
 import Database.HDBI
--- import Debug.Trace
 
 selectAll :: (Connection con, MonadResource m) => con -> Query -> [SqlValue] -> Source m [SqlValue]
 selectAll con query params = statementSource $ do
@@ -22,7 +20,11 @@ selectRawAll con query = statementSource $ do
   executeRaw st
   return st
 
-insertAll :: (Connection con, MonadResource m, Num count) => con -> Query -> Sink [SqlValue] m count
+insertAllCount :: (Connection con, MonadResource m, Num count) => con -> Query -> Sink [SqlValue] m count
+insertAllCount con query = statementSinkCount $ prepare con query
+
+
+insertAll :: (Connection con, MonadResource m) => con -> Query -> Sink [SqlValue] m ()
 insertAll con query = statementSink $ prepare con query
 
 
@@ -42,19 +44,34 @@ statementSource stmt = bracketP
           statementSource' st
 
 -- | Execute query many times with given thread of parameters
-statementSink :: (Statement stmt, MonadResource m, Num count) => IO stmt -> Sink [SqlValue] m count
-statementSink stmt = bracketP
-                     stmt
-                     finish
-                     $ statementSink' 0
+statementSinkCount :: (Statement stmt, MonadResource m, Num count) => IO stmt -> Sink [SqlValue] m count
+statementSinkCount stmt = bracketP
+                          stmt
+                          finish
+                          $ statementSinkCount' 0
   where
-    statementSink' !ac st = do
+    statementSinkCount' !ac st = do
       next <- await
       case next of
         Nothing -> return ac
         Just n -> do
           liftIO $ do
-            state <- statementStatus st
-            when (StatementNew /= state) $ reset st
+            reset st
             execute st n
-          statementSink' (ac+1) st
+          statementSinkCount' (ac+1) st
+
+statementSink :: (Statement stmt, MonadResource m) => IO stmt -> Sink [SqlValue] m ()
+statementSink stmt = bracketP
+                     stmt
+                     finish
+                     statementSink'
+  where
+    statementSink' st = do
+      next <- await
+      case next of
+        Nothing -> return ()
+        Just n -> do
+          liftIO $ do
+            reset st
+            execute st n
+          statementSink' st
