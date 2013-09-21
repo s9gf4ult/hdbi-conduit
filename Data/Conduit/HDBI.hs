@@ -8,12 +8,28 @@ import Control.Monad.IO.Class
 import Control.Monad
 import Data.Conduit
 import Database.HDBI
+-- import Debug.Trace
+
+selectAll :: (Connection con, MonadResource m) => con -> Query -> [SqlValue] -> Source m [SqlValue]
+selectAll con query params = statementSource $ do
+  st <- prepare con query
+  execute st params
+  return st
+
+selectRawAll :: (Connection con, MonadResource m) => con -> Query -> Source m [SqlValue]
+selectRawAll con query = statementSource $ do
+  st <- prepare con query
+  executeRaw st
+  return st
+
+insertAll :: (Connection con, MonadResource m, Num count) => con -> Query -> Sink [SqlValue] m count
+insertAll con query = statementSink $ prepare con query
 
 
--- | fetch sources 
-statementSource :: (Statement stmt, MonadResource m) => stmt -> Source m [SqlValue]
+-- | Fetch the result of query using `fetchRow`. Statement must be executed.
+statementSource :: (Statement stmt, MonadResource m) => IO stmt -> Source m [SqlValue]
 statementSource stmt = bracketP
-                       (return stmt)
+                       stmt
                        finish
                        statementSource'
   where
@@ -25,10 +41,10 @@ statementSource stmt = bracketP
           yield r
           statementSource' st
 
-
-statementSink :: (Statement stmt, MonadResource m, Num count) => stmt -> Sink [SqlValue] m count
+-- | Execute query many times with given thread of parameters
+statementSink :: (Statement stmt, MonadResource m, Num count) => IO stmt -> Sink [SqlValue] m count
 statementSink stmt = bracketP
-                     (return stmt)
+                     stmt
                      finish
                      $ statementSink' 0
   where
@@ -42,8 +58,3 @@ statementSink stmt = bracketP
             when (StatementNew /= state) $ reset st
             execute st n
           statementSink' (ac+1) st
-            
-             
-    
-      
-      
