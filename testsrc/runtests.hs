@@ -1,6 +1,7 @@
 {-# LANGUAGE
   OverloadedStrings
 , BangPatterns
+, ScopedTypeVariables
   #-}
 
 module RunTests where
@@ -33,19 +34,18 @@ allTests c = testGroup "All tests"
              , testProperty "Insert + copy" $ insertCopy c
              , testProperty "Insert + copy + sum" $ insertCopySum c]
 
-sumInts :: (Monad m, Num a, Num b, FromSql a, FromSql b) => Consumer [SqlValue] m (a, b)
-sumInts = L.fold (\(a, b) [x, y] -> (a + fromSql x, b + fromSql y)) (0, 0)
-
-sumPairs :: (Num a, Num b) => [(a, b)] -> (a, b)
-sumPairs = foldl' (\(!a, !b) (!c, !d) -> (a+c, b+d)) (0, 0)
+sumPairs :: (Num a, Num b) => (a, b) -> (a, b) -> (a, b)
+sumPairs (!a, !b) (!x, !y) = (a+x, b+y)
 
 insertFold :: SQliteConnection -> [(Integer, Integer)] -> Property
 insertFold c vals = M.monadicIO $ do
   res <- M.run $ withTransaction c $ do
     runRaw c "delete from values1"
-    runMany c "insert into values1(val1, val2) values (?,?)" $ map (\(a, b) -> [toSql a, toSql b]) vals
-    runResourceT $ selectRawAll c "select val1, val2 from values1" $$ sumInts
-  M.stop $ res ?== (sumPairs vals)
+    runManyRows c "insert into values1(val1, val2) values (?,?)" vals
+    runResourceT
+      $ selectRawAllRows c "select val1, val2 from values1"
+      $$ L.fold sumPairs (0 :: Integer, 0 :: Integer)
+  M.stop $ res ?== (foldl' sumPairs (0, 0) vals)
 
 insertCopy :: SQliteConnection -> [(Integer, Integer)] -> Property
 insertCopy c vals = M.monadicIO $ do
@@ -53,14 +53,12 @@ insertCopy c vals = M.monadicIO $ do
     runRaw c "delete from values1"
     runRaw c "delete from values2"
     runResourceT
-      $ L.sourceList (map (\(a, b) -> [toSql a, toSql b]) vals)
-      $$ insertAll c "insert into values1(val1, val2) values (?,?)"
+      $ L.sourceList vals
+      $$ insertAllRows c "insert into values1(val1, val2) values (?,?)"
     runResourceT
       $ selectRawAll c "select val1, val2 from values1"
       $$ insertAllCount c "insert into values2(val1, val2) values (?,?)"
   M.stop $ res == (length vals)
-
-
 
 insertCopySum :: SQliteConnection -> [(Integer, Integer)] -> Property
 insertCopySum c vals = M.monadicIO $ do
@@ -76,14 +74,14 @@ insertCopySum c vals = M.monadicIO $ do
       $$ insertAll c "insert into values2(val1, val2) values (?,?)"
     runResourceT
       $ (U.zip
-         (selectRawAll c "select val1, val2 from values1")
-         (selectRawAll c "select val1, val2 from values2"))
-      $= L.map (\([a, b], [x, y]) -> [toSql $ (fromSql a :: Integer) + (fromSql x), toSql $ (fromSql b :: Integer) + (fromSql y)])
-      $$ insertAll c "insert into values3(val1, val2) values (?,?)"
+         (selectRawAllRows c "select val1, val2 from values1")
+         (selectRawAllRows c "select val1, val2 from values2"))
+      $= L.map (\(a, b :: (Integer, Integer)) -> sumPairs a b)
+      $$ insertAllRows c "insert into values3(val1, val2) values (?,?)"
     runResourceT
-      $ selectRawAll c "select val1, val2 from values3"
-      $$ sumInts
-  let (a, b) = sumPairs vals
+      $ selectRawAllRows c "select val1, val2 from values3"
+      $$ L.fold sumPairs (0 :: Integer, 0 :: Integer)
+  let (a, b) = foldl' sumPairs (0, 0) vals
   M.stop $ (a*2, b*2) ==? res
 
 main :: IO ()
