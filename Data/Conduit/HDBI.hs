@@ -1,12 +1,38 @@
 {-# LANGUAGE
   BangPatterns
+, TypeFamilies
   #-}
 
 module Data.Conduit.HDBI where
 
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Resource
 import Data.Conduit
 import Database.HDBI
+
+allocConnection :: (Connection con, MonadResource m) => IO con -> m (ReleaseKey, con)
+allocConnection con = allocate con disconnect
+
+allocStmt :: (Statement stmt, MonadResource m) => IO stmt -> m (ReleaseKey, stmt)
+allocStmt stmt = allocate stmt finish
+
+executeStmt :: (Connection con, (ConnStatement con) ~ stmt, MonadResource m) => con -> Query -> [SqlValue] -> m (ReleaseKey, stmt)
+executeStmt con query vals = do
+  (key, stmt) <- allocStmt $ prepare con query
+  liftIO $ execute stmt vals
+  return (key, stmt)
+
+executeStmtRow :: (Connection con, (ConnStatement con) ~ stmt, ToRow row, MonadResource m) => con -> Query -> row -> m (ReleaseKey, stmt)
+executeStmtRow con query row = do
+  (key, stmt) <- allocStmt $ prepare con query
+  liftIO $ executeRow stmt row
+  return (key, stmt)
+
+executeStmtRaw :: (Connection con, (ConnStatement con) ~ stmt, MonadResource m) => con -> Query -> m (ReleaseKey, stmt)
+executeStmtRaw con query = do
+  (key, stmt) <- allocStmt $ prepare con query
+  liftIO $ executeRaw stmt
+  return (key, stmt)
 
 selectAll :: (Connection con, MonadResource m) => con -> Query -> [SqlValue] -> Source m [SqlValue]
 selectAll con query params = statementSource fetch $ do
