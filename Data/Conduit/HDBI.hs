@@ -3,7 +3,28 @@
 , TypeFamilies
   #-}
 
-module Data.Conduit.HDBI where
+module Data.Conduit.HDBI
+       (
+         -- * Conduit functions
+         selectAll
+       , selectAllRows
+       , selectRawAll
+       , selectRawAllRows
+       , insertAll
+       , insertAllRows
+       , insertAllCount
+       , insertAllRowsCount
+         -- * Auxiliary conduit functions
+       , statementSource
+       , statementSink
+       , statementSinkCount
+         -- * ResourceT functions
+       , allocConnection
+       , allocStmt
+       , executeStmt
+       , executeStmtRow
+       , executeStmtRaw
+       ) where
 
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource
@@ -34,48 +55,74 @@ executeStmtRaw con query = do
   liftIO $ executeRaw stmt
   return (key, stmt)
 
-selectAll :: (Connection con, MonadResource m) => con -> Query -> [SqlValue] -> Source m [SqlValue]
+-- | fetch all results of query
+selectAll :: (Connection con, MonadResource m)
+             => con
+             -> Query            -- query to execute
+             -> [SqlValue]       -- query parameters
+             -> Source m [SqlValue]
 selectAll con query params = statementSource fetch $ do
   st <- prepare con query
   execute st params
   return st
 
-selectAllRows :: (Connection con, MonadResource m, FromRow a) => con -> Query -> [SqlValue] -> Source m a
+-- | same as `selectAll` but reburn stream of `FromRow` instances
+selectAllRows :: (Connection con, MonadResource m, FromRow a)
+                 => con
+                 -> Query
+                 -> [SqlValue]
+                 -> Source m a
 selectAllRows con query params = statementSource fetchRow $ do
   st <- prepare con query
   execute st params
   return st
 
-selectRawAll :: (Connection con, MonadResource m) => con -> Query -> Source m [SqlValue]
+-- | same as `selectAll` but without query parameters
+selectRawAll :: (Connection con, MonadResource m)
+                => con
+                -> Query
+                -> Source m [SqlValue]
 selectRawAll con query = statementSource fetch $ do
   st <- prepare con query
   executeRaw st
   return st
 
+-- | same as `selectRawAll` but return stream of `FromRow` instances
 selectRawAllRows :: (Connection con, MonadResource m, FromRow a) => con -> Query -> Source m a
 selectRawAllRows con query = statementSource fetchRow $ do
   st <- prepare con query
   executeRaw st
   return st
 
+-- | same as `insertAll` but also count executed rows
 insertAllCount :: (Connection con, MonadResource m, Num count) => con -> Query -> Sink [SqlValue] m count
 insertAllCount con query = statementSinkCount execute $ prepare con query
 
-
+-- | same as `insertAllRows` but also count executed rows
 insertAllRowsCount :: (Connection con, MonadResource m, Num count, ToRow a) => con -> Query -> Sink a m count
 insertAllRowsCount con query = statementSinkCount executeRow $ prepare con query
 
-
-insertAll :: (Connection con, MonadResource m) => con -> Query -> Sink [SqlValue] m ()
+-- | perform `execute` for each bunch of values
+insertAll :: (Connection con, MonadResource m)
+             => con
+             -> Query
+             -> Sink [SqlValue] m ()
 insertAll con query = statementSink execute $ prepare con query
 
-
-insertAllRows :: (Connection con, MonadResource m, ToRow a) => con -> Query -> Sink a m ()
+-- | perfor `executeRow` for each input row
+insertAllRows :: (Connection con, MonadResource m, ToRow a)
+                 => con
+                 -> Query
+                 -> Sink a m ()
 insertAllRows con query = statementSink executeRow $ prepare con query
 
 
--- | Fetch the result of query using `fetchRow`. Statement must be executed.
-statementSource :: (Statement stmt, MonadResource m) => (stmt -> IO (Maybe a)) -> IO stmt -> Source m a
+-- | Get all values from the statement until action return ''Just a''
+statementSource :: (Statement stmt, MonadResource m)
+                   => (stmt -> IO (Maybe a))  -- action to execute until it return
+                                             -- Nothing
+                   -> IO stmt               -- statement constructor
+                   -> Source m a
 statementSource getter stmt = bracketP
                               stmt
                               finish
@@ -89,8 +136,12 @@ statementSource getter stmt = bracketP
           yield r
           statementSource' st
 
--- | Execute query many times with given thread of parameters
-statementSinkCount :: (Statement stmt, MonadResource m, Num count) => (stmt -> a -> IO ()) -> IO stmt -> Sink a m count
+-- | Execute action many times with given thread of values, return the count
+-- of executions
+statementSinkCount :: (Statement stmt, MonadResource m, Num count)
+                      => (stmt -> a -> IO ()) -- action to execute each time
+                      -> IO stmt            -- statement constructor
+                      -> Sink a m count
 statementSinkCount putter stmt = bracketP
                                  stmt
                                  finish
@@ -106,7 +157,11 @@ statementSinkCount putter stmt = bracketP
             putter st n
           statementSinkCount' (ac+1) st
 
-statementSink :: (Statement stmt, MonadResource m) => (stmt -> a -> IO ()) -> IO stmt -> Sink a m ()
+-- | Same as `statementSinkCount` but without counting, just return ()
+statementSink :: (Statement stmt, MonadResource m)
+                 => (stmt -> a -> IO ())
+                 -> IO stmt
+                 -> Sink a m ()
 statementSink putter stmt = bracketP
                             stmt
                             finish
