@@ -3,3 +3,5 @@ dist
 ts
 \#*
 *~
+.cabal-sandbox
+cabal.sandbox.config
