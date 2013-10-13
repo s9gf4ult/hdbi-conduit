@@ -8,34 +8,31 @@ module Data.Conduit.HDBI
        (
          -- * Conduit functions
          selectAll
-       , selectAllRows
-       , selectRawAll
-       , selectRawAllRows
        , insertAll
-       , insertAllRows
        , insertAllCount
-       , insertAllRowsCount
-       , insertTransAll
-       , insertTransAllRows
+       , insertAllTrans
          -- * Auxiliary conduit functions
        , statementSource
        , statementSink
        , statementSinkCount
+       , statementSinkTrans
          -- * ResourceT functions
        , allocConnection
        , allocStmt
        , executeStmt
-       , executeStmtRow
-       , executeStmtRaw
+         -- * Stream typing helpers
+       , asSqlVals
+       , asThisType
        ) where
 
 import Control.Exception (try, throw, SomeException(..))
 import Control.Monad (when)
 import Control.Monad.IO.Class
-import Control.Monad.Trans.Resource
 import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Resource
 import Data.Conduit
 import Database.HDBI
+import qualified Data.Conduit.List as L
 
 allocConnection :: (Connection con, MonadResource m) => IO con -> m (ReleaseKey, con)
 allocConnection con = allocate con disconnect
@@ -43,110 +40,49 @@ allocConnection con = allocate con disconnect
 allocStmt :: (Statement stmt, MonadResource m) => IO stmt -> m (ReleaseKey, stmt)
 allocStmt stmt = allocate stmt finish
 
-executeStmt :: (Connection con, (ConnStatement con) ~ stmt, MonadResource m) => con -> Query -> [SqlValue] -> m (ReleaseKey, stmt)
-executeStmt con query vals = do
+executeStmt :: (Connection con, (ConnStatement con) ~ stmt, ToRow row, MonadResource m)
+               => con -> Query -> row -> m (ReleaseKey, stmt)
+executeStmt con query row = do
   (key, stmt) <- allocStmt $ prepare con query
-  liftIO $ execute stmt vals
+  liftIO $ execute stmt row
   return (key, stmt)
 
-executeStmtRow :: (Connection con, (ConnStatement con) ~ stmt, ToRow row, MonadResource m) => con -> Query -> row -> m (ReleaseKey, stmt)
-executeStmtRow con query row = do
-  (key, stmt) <- allocStmt $ prepare con query
-  liftIO $ executeRow stmt row
-  return (key, stmt)
 
-executeStmtRaw :: (Connection con, (ConnStatement con) ~ stmt, MonadResource m) => con -> Query -> m (ReleaseKey, stmt)
-executeStmtRaw con query = do
-  (key, stmt) <- allocStmt $ prepare con query
-  liftIO $ executeRaw stmt
-  return (key, stmt)
-
-execStmt :: (Connection con, (ConnStatement con) ~ stmt)
-            => (stmt -> row -> IO ())
-            -> con -> Query -> row
-            -> IO stmt
-execStmt exec con query params = do
-  st <- prepare con query
-  (r :: Either SomeException ()) <- try $ exec st params
-  case r of
-    Left e -> do
-      finish st
-      throw e
-    Right _ -> return st
-
--- | fetch all results of query
-selectAll :: (Connection con, MonadResource m)
-             => con
-             -> Query            -- query to execute
-             -> [SqlValue]       -- query parameters
-             -> Source m [SqlValue]
-selectAll con query params = statementSource (liftIO . fetch)
-                             $ execStmt execute con query params
-
--- | same as `selectAll` but reburn stream of `FromRow` instances
-selectAllRows :: (Connection con, MonadResource m, FromRow a)
-                 => con
-                 -> Query
-                 -> [SqlValue]
-                 -> Source m a
-selectAllRows con query params = statementSource (liftIO . fetchRow)
-                                 $ execStmt execute con query params
-
-
--- | same as `selectAll` but without query parameters
-selectRawAll :: (Connection con, MonadResource m)
-                => con
-                -> Query
-                -> Source m [SqlValue]
-selectRawAll con query = statementSource (liftIO . fetch)
-                         $ execStmt execute con query []
-
--- | same as `selectRawAll` but return stream of `FromRow` instances
-selectRawAllRows :: (Connection con, MonadResource m, FromRow a) => con -> Query -> Source m a
-selectRawAllRows con query = statementSource (liftIO . fetchRow)
-                             $ execStmt execute con query []
-
-
--- | same as `insertAll` but also count executed rows
-insertAllCount :: (Connection con, MonadResource m, Num count) => con -> Query -> Sink [SqlValue] m count
-insertAllCount con query = statementSinkCount valuePutter $ prepare con query
-
-
--- | same as `insertAllRows` but also count executed rows
-insertAllRowsCount :: (Connection con, MonadResource m, Num count, ToRow a) => con -> Query -> Sink a m count
-insertAllRowsCount con query = statementSinkCount rowPutter $ prepare con query
-
--- | perform `execute` for each bunch of values
-insertAll :: (Connection con, MonadResource m)
+-- | Execute query and stream result
+selectAll :: (Connection con, MonadResource m, FromRow row, ToRow params)
              => con
              -> Query
-             -> Sink [SqlValue] m ()
-insertAll con query = statementSink valuePutter $ prepare con query
+             -> params
+             -> Source m row
+selectAll con query params = statementSource (liftIO . fetch) execStmt
+  where
+    execStmt = do
+      st <- prepare con query
+      (r :: Either SomeException ()) <- try $ execute st params
+      case r of
+        Left e -> do
+          finish st
+          throw e
+        Right _ -> return st
+
+-- | same as `insertAll` but also count executed rows
+insertAllCount :: (Connection con, MonadResource m, Num count, ToRow a) => con -> Query -> Sink a m count
+insertAllCount con query = statementSinkCount rowPutter $ prepare con query
+
 
 -- | perform `executeRow` for each input row
-insertAllRows :: (Connection con, MonadResource m, ToRow a)
-                 => con
-                 -> Query
-                 -> Sink a m ()
-insertAllRows con query = statementSink rowPutter $ prepare con query
-  where
-    putter st val = liftIO $ do
-      reset st
-      executeRow st val
-
--- | Execute query on each (Chunk [SqlValue]) and commit on each Flush
-insertTransAll :: (Connection con, MonadResource m)
-                  => con
-                  -> Query
-                  -> Sink (Flush [SqlValue]) m ()
-insertTransAll con query = statementSinkTrans con valuePutter $ prepare con query
+insertAll :: (Connection con, MonadResource m, ToRow a)
+             => con
+             -> Query
+             -> Sink a m ()
+insertAll con query = statementSink rowPutter $ prepare con query
 
 -- | Execute query on each (Chunk row) and commit on each Flush
-insertTransAllRows :: (Connection con, MonadResource m, ToRow a)
-                      => con
-                      -> Query
-                      -> Sink (Flush a) m ()
-insertTransAllRows con query = statementSinkTrans con rowPutter $ prepare con query
+insertAllTrans :: (Connection con, MonadResource m, ToRow a)
+                  => con
+                  -> Query
+                  -> Sink (Flush a) m ()
+insertAllTrans con query = statementSinkTrans con rowPutter $ prepare con query
 
 
 -- | Get all values from the statement until action return ''Just a''
@@ -234,18 +170,19 @@ statementSinkTrans con putter stmt = do
             statementSinkTrans' True st
 
 
-valuePutter :: (MonadIO m, Statement stmt)
-               => stmt
-               -> [SqlValue]
-               -> m ()
-valuePutter st vals = liftIO $ do
-  reset st
-  execute st vals
-
 rowPutter :: (MonadIO m, Statement stmt, ToRow row)
                => stmt
                -> row
                -> m ()
 rowPutter st row = liftIO $ do
   reset st
-  executeRow st row
+  execute st row
+
+-- | Function to fuse when no data convertion is needed
+asSqlVals :: (Monad m) => Conduit [SqlValue] m [SqlValue]
+asSqlVals = L.map id
+
+-- | To specify actual stream type by fusing with it. The value of argument is
+-- not used
+asThisType :: (Monad m) => a -> Conduit a m a
+asThisType _ = L.map id

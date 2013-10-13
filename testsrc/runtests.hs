@@ -37,13 +37,24 @@ allTests c = testGroup "All tests"
 sumPairs :: (Num a, Num b) => (a, b) -> (a, b) -> (a, b)
 sumPairs (!a, !b) (!x, !y) = (a+x, b+y)
 
+
+-- insertTransactional :: SQliteConnection -> [Flush (Integer, Integer)] -> Property
+-- insertTransactional con vals = M.monadicIO $ do
+--   res <- M.run $ do
+--     runRaw c "delete from values1"
+--     runResourceT
+--       $ L.sourceList vals
+--       $$ insertTransAllRows c "insert into values1 (val1, val2) values (?,?)"
+  
+--   M.stop $ 
+
 insertFold :: SQliteConnection -> [(Integer, Integer)] -> Property
 insertFold c vals = M.monadicIO $ do
   res <- M.run $ withTransaction c $ do
     runRaw c "delete from values1"
-    runManyRows c "insert into values1(val1, val2) values (?,?)" vals
+    runMany c "insert into values1(val1, val2) values (?,?)" vals
     runResourceT
-      $ selectRawAllRows c "select val1, val2 from values1"
+      $ selectAll c "select val1, val2 from values1" ()
       $$ L.fold sumPairs (0 :: Integer, 0 :: Integer)
   M.stop $ res ?== (foldl' sumPairs (0, 0) vals)
 
@@ -54,9 +65,9 @@ insertCopy c vals = M.monadicIO $ do
     runRaw c "delete from values2"
     runResourceT
       $ L.sourceList vals
-      $$ insertAllRows c "insert into values1(val1, val2) values (?,?)"
+      $$ insertAll c "insert into values1(val1, val2) values (?,?)"
     runResourceT
-      $ selectRawAll c "select val1, val2 from values1"
+      $ selectAll c "select val1, val2 from values1" () $= asThisType (undefined :: (Int, Int))
       $$ insertAllCount c "insert into values2(val1, val2) values (?,?)"
   M.stop $ res == (length vals)
 
@@ -67,19 +78,19 @@ insertCopySum c vals = M.monadicIO $ do
                                             "values2",
                                             "values3"]
     runResourceT
-      $ L.sourceList (map (\(a, b) -> [toSql a, toSql b]) vals)
+      $ L.sourceList vals
       $$ insertAll c "insert into values1(val1, val2) values (?,?)"
     runResourceT
-      $ selectRawAll c "select val1, val2 from values1"
+      $ selectAll c "select val1, val2 from values1" () $= asSqlVals
       $$ insertAll c "insert into values2(val1, val2) values (?,?)"
     runResourceT
       $ (U.zip
-         (selectRawAllRows c "select val1, val2 from values1")
-         (selectRawAllRows c "select val1, val2 from values2"))
+         (selectAll c "select val1, val2 from values1" ())
+         (selectAll c "select val1, val2 from values2" ()))
       $= L.map (\(a, b :: (Integer, Integer)) -> sumPairs a b)
-      $$ insertAllRows c "insert into values3(val1, val2) values (?,?)"
+      $$ insertAll c "insert into values3(val1, val2) values (?,?)"
     runResourceT
-      $ selectRawAllRows c "select val1, val2 from values3"
+      $ selectAll c "select val1, val2 from values3" ()
       $$ L.fold sumPairs (0 :: Integer, 0 :: Integer)
   let (a, b) = foldl' sumPairs (0, 0) vals
   M.stop $ (a*2, b*2) ==? res
