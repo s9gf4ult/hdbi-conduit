@@ -11,6 +11,8 @@ module Data.Conduit.HDBI
        , insertAll
        , insertAllCount
        , insertAllTrans
+			 , flushAt
+			 , flushBy
          -- * Auxiliary conduit functions
        , statementSource
        , statementSink
@@ -176,7 +178,7 @@ statementSinkTrans con putter stmt = do
 flushBy :: (Monad m) => (a -> a -> Bool) -> Conduit a m (Flush a)
 flushBy pref = flushBy' Nothing
   where
-    flushBy' !last = case last of
+    flushBy' !lst = case lst of
       Nothing -> do
         n <- await
         case n of
