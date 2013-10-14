@@ -77,7 +77,8 @@ insertAll :: (Connection con, MonadResource m, ToRow a)
              -> Sink a m ()
 insertAll con query = statementSink rowPutter $ prepare con query
 
--- | Execute query on each (Chunk row) and commit on each Flush
+-- | Execute query on each (Chunk row) and commit on each Flush. The last query
+-- is always commit, so be carefull.
 insertAllTrans :: (Connection con, MonadResource m, ToRow a)
                   => con
                   -> Query
@@ -141,7 +142,8 @@ statementSink putter stmt = bracketP
           lift $ putter st n
           statementSink' st
 
--- | Execute each chunk with putter function and commit transaction on each flush
+-- | Execute each chunk with putter function and commit transaction on each
+-- flush. The last action is always commit.
 statementSinkTrans :: (Connection con, (ConnStatement con) ~ stmt, MonadResource m, MonadIO m)
                       => con
                       -> (stmt -> a -> m ())
@@ -168,6 +170,44 @@ statementSinkTrans con putter stmt = do
             when (not intrans) $ liftIO $ begin con
             lift $ putter st val
             statementSinkTrans' True st
+
+-- | The behaviour is the same as `groupBy` function. Each time when prefix
+-- return False the conduit yields Flush.
+flushBy :: (Monad m) => (a -> a -> Bool) -> Conduit a m (Flush a)
+flushBy pref = flushBy' Nothing
+  where
+    flushBy' !last = case last of
+      Nothing -> do
+        n <- await
+        case n of
+          Nothing -> return ()
+          Just x -> do
+            yield $ Chunk x
+            flushBy' $ Just x
+      Just l -> do
+        n <- await
+        case n of
+          Nothing -> return ()
+          Just x -> do
+            when (not $ pref l x) $ yield Flush
+            yield $ Chunk x
+            flushBy' $ Just x
+
+-- | separate each `i` chunks with Flush
+flushAt :: (Monad m, Integral i) => i -> Conduit a m (Flush a)
+flushAt cnt = flushAt' c
+  where
+    c = max 1 cnt
+    flushAt' 0 = do
+      yield Flush
+      flushAt' c
+    flushAt' !count = do
+      n <- await
+      case n of
+        Nothing -> return ()
+        Just x -> do
+          yield $ Chunk x
+          flushAt' $ count - 1
 
 
 rowPutter :: (MonadIO m, Statement stmt, ToRow row)
