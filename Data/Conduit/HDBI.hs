@@ -11,8 +11,8 @@ module Data.Conduit.HDBI
        , insertAll
        , insertAllCount
        , insertAllTrans
-			 , flushAt
-			 , flushBy
+       , flushAt
+       , flushBy
          -- * Auxiliary conduit functions
        , statementSource
        , statementSink

@@ -32,21 +32,46 @@ allTests :: SQliteConnection -> Test
 allTests c = testGroup "All tests"
              [ testProperty "Insert + fold" $ insertFold c
              , testProperty "Insert + copy" $ insertCopy c
-             , testProperty "Insert + copy + sum" $ insertCopySum c]
+             , testProperty "Insert + copy + sum" $ insertCopySum c
+             , testProperty "Insert trans fluahAt" $ insertTransFlushAt c
+             , testProperty "Insert trans flushBy" $ insertTransFlushBy c
+             ]
 
 sumPairs :: (Num a, Num b) => (a, b) -> (a, b) -> (a, b)
 sumPairs (!a, !b) (!x, !y) = (a+x, b+y)
 
 
--- insertTransactional :: SQliteConnection -> [Flush (Integer, Integer)] -> Property
--- insertTransactional con vals = M.monadicIO $ do
---   res <- M.run $ do
---     runRaw c "delete from values1"
---     runResourceT
---       $ L.sourceList vals
---       $$ insertTransAllRows c "insert into values1 (val1, val2) values (?,?)"
-  
---   M.stop $ 
+insertTransFlushAt :: SQliteConnection -> Positive Int -> [(Integer, Integer)] -> Property
+insertTransFlushAt c count vals = M.monadicIO $ do
+  (Just res, tr) <- M.run $ do
+    runRaw c "delete from values1"
+    runResourceT
+      $ L.sourceList vals
+      $= (flushAt $ getPositive count)
+      $$ insertAllTrans c "insert into values1 (val1, val2) values (?,?)"
+    r <- runFetchOne c "select count(*) from values1" ()
+    tr <- inTransaction c
+    return (r, tr)
+  _ <- M.stop $ res ?== (length vals)
+  M.stop $ tr ?== False
+
+insertTransFlushBy :: SQliteConnection -> NonEmptyList Integer -> Property
+insertTransFlushBy con vals = M.monadicIO $ do
+  (tr, r) <- M.run $ do
+    runRaw con "delete from values1"
+    runResourceT
+      $ L.sourceList nvals
+      $= flushBy signFlush
+      $= L.map (fmap one)      -- flush is the functor
+      $$ insertAllTrans con "insert into values1 (val1) values (?)"
+    tr <- inTransaction con
+    Just r <- runFetchOne con "select sum(val1) from values1" ()
+    return (tr, r)
+  _ <- M.stop $ tr ?== False
+  M.stop $ r ?== (sum nvals)
+  where
+    nvals = getNonEmpty vals
+    signFlush a b = (signum a) == (signum b)
 
 insertFold :: SQliteConnection -> [(Integer, Integer)] -> Property
 insertFold c vals = M.monadicIO $ do
